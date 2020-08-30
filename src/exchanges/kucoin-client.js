@@ -307,11 +307,14 @@ class KucoinClient extends BasicClient {
     if (msg.type === "ack" || msg.type === "error") {
       setTimeout(() => this._sem.leave(), this._throttleMs);
     }
-
     if (msg.type === "error") {
       let err = new Error(msg.data);
       err.msg = msg;
       this._onError(err);
+      return;
+    }
+
+    if(!msg.subject) {
       return;
     }
 
