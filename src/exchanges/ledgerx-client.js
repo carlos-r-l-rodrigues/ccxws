@@ -16,7 +16,7 @@ class LedgerXClient extends BasicClient {
 
     this.hasTrades = true;
     this.hasLevel3Updates = true;
-    this._runId = 0;
+    this.runId = 0;
     this.apiKey = apiKey;
   }
 
@@ -33,24 +33,32 @@ class LedgerXClient extends BasicClient {
   _onMessage(msg) {
     const json = JSON.parse(msg);
 
+    if (json.type === "auth_success") {
+      return;
+    }
+
     if (json.type === "book_top") {
+      return;
+    }
+
+    if (json.type === "exposure_reports") {
+      return;
+    }
+
+    if (json.type === "open_positions_update") {
+      return;
+    }
+
+    if (json.type === "collateral_balance_update") {
       return;
     }
 
     if (json.type === "heartbeat") {
       this._watcher.markAlive();
 
-      // initialize the runId
-      if (this._runId === 0) {
-        this._runId = json.run_id;
-      }
-      // handle when runId has changed
-      else if (this._runId !== json.run_id) {
-        this._runId = json.run_id;
-        for (let market of this._level3UpdateSubs.values()) {
-          const update = this._constructL3Reset(json, market);
-          this.emit("l3update", update, market, json);
-        }
+      // update the run_id if it's changed
+      if (this.runId !== json.run_id) {
+        this.runId = json.run_id;
       }
       return;
     }
@@ -58,7 +66,9 @@ class LedgerXClient extends BasicClient {
     if (json.type === "action_report") {
       // insert event
       if (json.status_type === 200) {
-        const market = this._level3UpdateSubs.get(json.contract_id.toFixed());
+        const market =
+          this._level3UpdateSubs.get(json.contract_id) ||
+          this._level3UpdateSubs.get(json.contract_id.toString());
         if (!market) return;
 
         const update = this._constructL3Insert(json, market);
@@ -68,16 +78,20 @@ class LedgerXClient extends BasicClient {
 
       // trade event
       if (json.status_type === 201) {
-        if (this._tradeSubs.has(json.contract_id)) {
-          const market = this._tradeSubs.get(json.contract_id.toFixed());
-          const trade = this._constructTrade(json);
+        // check for trade subscription
+        let market =
+          this._tradeSubs.get(json.contract_id) ||
+          this._tradeSubs.get(json.contract_id.toString()); // prettier-ignore
+        if (market) {
+          const trade = this._constructTrade(json, market);
           this.emit("trade", trade, market, json);
         }
 
-        if (this._level3UpdateSubs.has(json.contract_id)) {
-          const market = this._level3UpdateSubs.get(json.contract_id.toFixed());
-          if (!market) return;
-
+        // check for l3 subscription
+        market =
+          this._level3UpdateSubs.get(json.contract_id) ||
+          this._level3UpdateSubs.get(json.contract_id.toString());
+        if (market) {
           const update = this._constructL3Trade(json, market);
           this.emit("l3update", update, market, json);
         }
@@ -87,7 +101,9 @@ class LedgerXClient extends BasicClient {
 
       // cancel event
       if (json.status_type === 203) {
-        const market = this._level3UpdateSubs.get(json.contract_id.toFixed());
+        const market =
+          this._level3UpdateSubs.get(json.contract_id) ||
+          this._level3UpdateSubs.get(json.contract_id.toString());
         if (!market) return;
 
         const update = this._constructL3Cancel(json, market);
@@ -95,15 +111,12 @@ class LedgerXClient extends BasicClient {
         return;
       }
     }
-
-    // console.log(json);
   }
 
   /**
    * Obtains the orderbook via REST
    */
   async _requestLevel3Snapshot(market) {
-    let failed = false;
     try {
       let uri = `https://trade.ledgerx.com/api/book-states/${market.id}?token=${this.apiKey}`;
       let { data } = await https.get(uri);
@@ -128,10 +141,8 @@ class LedgerXClient extends BasicClient {
       });
       this.emit("l3snapshot", snapshot, market);
     } catch (ex) {
+      // TODO handle this properly
       this.emit("error", ex);
-      failed = true;
-    } finally {
-      if (failed) this._requestLevel3Snapshot(market);
     }
   }
 
@@ -186,15 +197,21 @@ class LedgerXClient extends BasicClient {
     }
    */
   _constructTrade(msg, market) {
+    let buyOrderId;
+    let sellOrderId;
+    if (msg.is_ask) sellOrderId = msg.mid;
+    else buyOrderId = msg.mid;
     return new Trade({
       exchange: this._name,
       base: market.base,
       quote: market.quote,
-      tradeId: msg.mid,
+      tradeId: undefined, // doesn't emit or match REST API
       unix: Math.floor(msg.timestamp / 1e6),
       side: msg.is_ask ? "sell" : "buy",
       price: msg.filled_price.toFixed(8),
-      amount: msg.filled_price.toFixed(8),
+      amount: msg.filled_size.toFixed(8),
+      buyOrderId,
+      sellOrderId,
     });
   }
 
@@ -259,6 +276,7 @@ class LedgerXClient extends BasicClient {
       quote: market.quote,
       sequenceId: msg.clock,
       timestampMs: Math.floor(msg.inserted_time / 1e6),
+      runId: this.runId,
       asks,
       bids,
     });
@@ -325,6 +343,7 @@ class LedgerXClient extends BasicClient {
       quote: market.quote,
       sequenceId: msg.clock,
       timestampMs: Math.floor(msg.inserted_time / 1e6),
+      runId: this.runId,
       asks,
       bids,
     });
@@ -391,21 +410,9 @@ class LedgerXClient extends BasicClient {
       quote: market.quote,
       sequenceId: msg.clock,
       timestampMs: Math.floor(msg.inserted_time / 1e6),
+      runId: this.runId,
       asks,
       bids,
-    });
-  }
-
-  /**
-   * Signals an orderbook reset must be performed. This is detected
-   * when the heartbeat changes its run identifier.
-   */
-  _constructL3Reset(msg, market) {
-    return new Level3Update({
-      exchange: this._name,
-      base: market.base,
-      quote: market.quote,
-      reset: true,
     });
   }
 }

@@ -16,7 +16,7 @@ testClient({
 
   fetchMarkets: fetchAllMarkets,
 
-  skip: false,
+  skip: true,
   unsubWaitMs: 1500,
 
   testConnectEvents: true,
@@ -65,6 +65,7 @@ testClient({
     hasTimestampMs: false,
     hasSequenceId: true,
     hasLastSequenceId: true,
+    hasEventMs: true,
     hasCount: false,
   },
 });

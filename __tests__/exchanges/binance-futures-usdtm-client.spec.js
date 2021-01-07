@@ -69,14 +69,15 @@ testClient({
   candle: {},
 
   l2snapshot: {
-    hasTimestampMs: false,
+    hasTimestampMs: true,
     hasSequenceId: true,
     hasCount: false,
   },
 
   l2update: {
     hasSnapshot: true,
-    hasTimestampMs: false,
+    hasTimestampMs: true,
+    hasEventMs: true,
     hasSequenceId: true,
     hasLastSequenceId: true,
     hasCount: false,

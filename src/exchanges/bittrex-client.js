@@ -10,6 +10,8 @@ const Level2Snapshot = require("../level2-snapshot");
 const Level2Update = require("../level2-update");
 const Level2Point = require("../level2-point");
 const { CandlePeriod } = require("../enums");
+const { throttle } = require("../flowcontrol/throttle");
+const { wait } = require("../util");
 
 /**
  * Implements the v3 API:
@@ -21,7 +23,7 @@ const { CandlePeriod } = require("../enums");
  * standard client.
  */
 class BittrexClient extends BasicClient {
-  constructor({ wssPath, watcherMs = 15000 } = {}) {
+  constructor({ wssPath, watcherMs = 15000, throttleL2Snapshot = 100 } = {}) {
     super(wssPath, "Bittrex", undefined, watcherMs);
 
     this.hasTickers = true;
@@ -33,6 +35,7 @@ class BittrexClient extends BasicClient {
     this.hasLevel3Updates = false;
     this.candlePeriod = CandlePeriod._1m;
     this.orderBookDepth = 500;
+    this.connectInitTimeoutMs = 5000;
 
     this._subbedTickers = false;
     this._messageId = 0;
@@ -40,6 +43,10 @@ class BittrexClient extends BasicClient {
     this._processTrades = this._processTrades.bind(this);
     this._processCandles = this._processCandles.bind(this);
     this._processLevel2Update = this._processLevel2Update.bind(this);
+    this._requestLevel2Snapshot = throttle(
+      this._requestLevel2Snapshot.bind(this),
+      throttleL2Snapshot
+    );
   }
 
   ////////////////////////////////////
@@ -51,6 +58,7 @@ class BittrexClient extends BasicClient {
 
   _beforeClose() {
     this._subbedTickers = false;
+    this._requestLevel2Snapshot.cancel();
   }
 
   _sendHeartbeat() {
@@ -159,83 +167,92 @@ class BittrexClient extends BasicClient {
     }
   }
 
+  /**
+   * Asynchronously connect to a socket. This method will retrieve a token
+   * from an HTTP request and then construct a websocket. If the HTTP
+   * request fails, it will retry until successful.
+   */
   async _connectAsync() {
-    try {
-      let wssPath = this.wssPath;
+    let wssPath = this.wssPath;
 
-      if (!wssPath) {
+    // Retry HTTP requests until we are successful
+    while (!wssPath) {
+      try {
         let data = JSON.stringify([{ name: "c3" }]);
         let negotiations = await https.get(
           `https://socket-v3.bittrex.com/signalr/negotiate?connectionData=${data}&clientProtocol=1.5`
         );
         let token = encodeURIComponent(negotiations.ConnectionToken);
         wssPath = `wss://socket-v3.bittrex.com/signalr/connect?clientProtocol=1.5&transport=webSockets&connectionToken=${token}&connectionData=${data}&tid=10`;
+      } catch (ex) {
+        await wait(this.connectInitTimeoutMs);
+        this._onError(ex);
       }
-
-      let wss = new SmartWss(wssPath);
-      this._wss = wss;
-
-      wss.on("error", err => this.emit("error", err));
-      wss.on("connecting", () => this.emit("connecting"));
-      wss.on("connected", this._onConnected.bind(this));
-      wss.on("disconnected", () => this.emit("disconnected"));
-      wss.on("closing", () => this.emit("closing"));
-      wss.on("closed", () => this.emit("closed"));
-      wss.on("message", this._onMessage.bind(this));
-      if (this._beforeConnect) this._beforeConnect();
-      wss.connect();
-    } catch (ex) {
-      this._onError(ex);
     }
+
+    // Construct a socket and bind all events
+    let wss = new SmartWss(wssPath);
+    this._wss = wss;
+    this._wss.on("error", this._onError.bind(this));
+    this._wss.on("connecting", this._onConnecting.bind(this));
+    this._wss.on("connected", this._onConnected.bind(this));
+    this._wss.on("disconnected", this._onDisconnected.bind(this));
+    this._wss.on("closing", this._onClosing.bind(this));
+    this._wss.on("closed", this._onClosed.bind(this));
+    this._wss.on("message", msg => {
+      try {
+        this._onMessage(msg);
+      } catch (ex) {
+        this._onError(ex);
+      }
+    });
+    if (this._beforeConnect) this._beforeConnect();
+    this._wss.connect();
   }
 
   _onMessage(raw) {
-    try {
-      const fullMsg = JSON.parse(raw);
+    const fullMsg = JSON.parse(raw);
 
-      // Handle responses
-      // {"R":[{"Success":true,"ErrorCode":null},{"Success":true,"ErrorCode":null}],"I":1}
-      if (fullMsg.R) {
-        for (let msg of fullMsg.R) {
-          if (!msg.Success) {
-            this.emit("error", new Error("Subscription failed with error " + msg.ErrorCode));
-          }
+    // Handle responses
+    // {"R":[{"Success":true,"ErrorCode":null},{"Success":true,"ErrorCode":null}],"I":1}
+    if (fullMsg.R) {
+      for (let msg of fullMsg.R) {
+        if (!msg.Success) {
+          this.emit("error", new Error("Subscription failed with error " + msg.ErrorCode));
+        }
+      }
+    }
+
+    // Handle messages
+    if (!fullMsg.M) return;
+    for (let msg of fullMsg.M) {
+      if (msg.M === "heartbeat") {
+        this._watcher.markAlive();
+      }
+
+      if (msg.M === "marketSummaries") {
+        for (let a of msg.A) {
+          zlib.inflateRaw(Buffer.from(a, "base64"), this._processTickers);
         }
       }
 
-      // Handle messages
-      if (!fullMsg.M) return;
-      for (let msg of fullMsg.M) {
-        if (msg.M === "heartbeat") {
-          this._watcher.markAlive();
-        }
-
-        if (msg.M === "marketSummaries") {
-          for (let a of msg.A) {
-            zlib.inflateRaw(Buffer.from(a, "base64"), this._processTickers);
-          }
-        }
-
-        if (msg.M === "trade") {
-          for (let a of msg.A) {
-            zlib.inflateRaw(Buffer.from(a, "base64"), this._processTrades);
-          }
-        }
-
-        if (msg.M === "candle") {
-          for (let a of msg.A) {
-            zlib.inflateRaw(Buffer.from(a, "base64"), this._processCandles);
-          }
-        }
-
-        if (msg.M === "orderBook") {
-          for (let a of msg.A) {
-            zlib.inflateRaw(Buffer.from(a, "base64"), this._processLevel2Update);
-          }
+      if (msg.M === "trade") {
+        for (let a of msg.A) {
+          zlib.inflateRaw(Buffer.from(a, "base64"), this._processTrades);
         }
       }
-    } catch (ex) {
-      this.emit("error", ex);
+
+      if (msg.M === "candle") {
+        for (let a of msg.A) {
+          zlib.inflateRaw(Buffer.from(a, "base64"), this._processCandles);
+        }
+      }
+
+      if (msg.M === "orderBook") {
+        for (let a of msg.A) {
+          zlib.inflateRaw(Buffer.from(a, "base64"), this._processLevel2Update);
+        }
+      }
     }
   }
 
@@ -455,22 +472,30 @@ class BittrexClient extends BasicClient {
     try {
       let remote_id = market.id;
       let uri = `https://api.bittrex.com/v3/markets/${remote_id}/orderbook?depth=${this.orderBookDepth}`;
-      let raw = await https.get(uri);
+      let { data, response } = await https.getResponse(uri);
+      let raw = data;
+      const sequence = +response.headers.sequence;
       let asks = raw.ask.map(p => new Level2Point(p.rate, p.quantity));
       let bids = raw.bid.map(p => new Level2Point(p.rate, p.quantity));
       let snapshot = new Level2Snapshot({
         exchange: this._name,
         base: market.base,
         quote: market.quote,
+        sequenceId: sequence,
         asks,
         bids,
       });
       this.emit("l2snapshot", snapshot, market);
     } catch (ex) {
-      this.emit("error", ex);
-      failed = true;
+      let err = new Error("L2Snapshot failed");
+      err.inner = ex.message;
+      err.market = market;
+      this.emit("error", err);
+      failed = err;
     } finally {
-      if (failed) this._requestLevel2Snapshot(market);
+      if (failed && failed.inner.indexOf("MARKET_DOES_NOT_EXIST") === -1) {
+        this._requestLevel2Snapshot(market);
+      }
     }
   }
 }

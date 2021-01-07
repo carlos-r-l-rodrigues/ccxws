@@ -79,6 +79,7 @@ testClient({
     hasTimestampMs: false,
     hasSequenceId: true,
     hasLastSequenceId: true,
+    hasEventMs: true,
     hasCount: false,
   },
 });

@@ -243,18 +243,18 @@ class DeribitClient extends BasicClient {
       base: market.base,
       quote: market.quote,
       timestamp: data.timestamp,
-      last: data.last_price.toFixed(8),
+      last: (data.last_price ? data.last_price : 0).toFixed(8),
       open: undefined,
-      high: data.stats.high.toFixed(8),
-      low: data.stats.low.toFixed(8),
-      volume: data.stats.volume.toFixed(8),
+      high: (data.stats.high ? data.stats.high : 0).toFixed(8),
+      low: (data.stats.low ? data.stats.low : 0).toFixed(8),
+      volume: (data.stats.volume ? data.stats.volume : 0).toFixed(8),
       quoteVolume: undefined,
       change: undefined,
-      changePercent: data.stats.price_change.toFixed(2),
-      ask: data.best_ask_price.toFixed(8),
-      askVolume: data.best_ask_amount.toFixed(8),
-      bid: data.best_bid_price.toFixed(8),
-      bidVolume: data.best_bid_amount.toFixed(8),
+      changePercent: (data.stats.price_change ? data.stats.price_change : 0).toFixed(2),
+      ask: (data.best_ask_price ? data.best_ask_price : 0).toFixed(8),
+      askVolume: (data.best_ask_amount ? data.best_ask_amount : 0).toFixed(8),
+      bid: (data.best_bid_price ? data.best_bid_price : 0).toFixed(8),
+      bidVolume: (data.best_bid_amount ? data.best_bid_amount : 0).toFixed(8),
     });
   }
 
@@ -352,10 +352,10 @@ class DeribitClient extends BasicClient {
     const sequenceId = data.change_id;
 
     const asks = data.asks.map(
-      p => new Level2Point(p[1].toFixed(8), p[2].toFixed(8), undefined, { action: p[0] })
+      p => new Level2Point(p[1].toFixed(8), p[2].toFixed(8), undefined, { type: p[0] })
     );
     const bids = data.bids.map(
-      p => new Level2Point(p[1].toFixed(8), p[2].toFixed(8), undefined, { action: p[0] })
+      p => new Level2Point(p[1].toFixed(8), p[2].toFixed(8), undefined, { type: p[0] })
     );
 
     return new Level2Snapshot({
@@ -399,10 +399,10 @@ class DeribitClient extends BasicClient {
     const sequenceId = data.change_id;
 
     const asks = data.asks.map(
-      p => new Level2Point(p[1].toFixed(8), p[2].toFixed(2), undefined, { action: p[0] })
+      p => new Level2Point(p[1].toFixed(8), p[2].toFixed(2), undefined, { type: p[0] })
     );
     const bids = data.bids.map(
-      p => new Level2Point(p[1].toFixed(8), p[2].toFixed(2), undefined, { action: p[0] })
+      p => new Level2Point(p[1].toFixed(8), p[2].toFixed(2), undefined, { type: p[0] })
     );
 
     return new Level2Snapshot({
