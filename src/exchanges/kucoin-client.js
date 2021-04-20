@@ -11,7 +11,6 @@ const Level3Snapshot = require("../level3-snapshot");
 const https = require("../https");
 const { CandlePeriod } = require("../enums");
 const { throttle } = require("../flowcontrol/throttle");
-const { batch } = require("../flowcontrol/batch");
 const Level3Point = require("../level3-point");
 const { wait } = require("../util");
 
@@ -84,14 +83,6 @@ class KucoinClient extends BasicClient {
       if (this.wssPath) super._connect();
       else this._connectAsync();
     }
-  }
-
-  _onClosing() {
-    this._sendSubCandles.cancel();
-    this._sendUnsubCandles.cancel();
-    this._sendMessage.cancel();
-    this._requestLevel2Snapshot.cancel();
-    super._onClosing();
   }
 
   async _connectAsync() {
@@ -279,14 +270,11 @@ class KucoinClient extends BasicClient {
     if (msg.type === "ack") {
       return;
     }
+
     if (msg.type === "error") {
       let err = new Error(msg.data);
       err.msg = msg;
       this._onError(err);
-      return;
-    }
-
-    if(!msg.subject) {
       return;
     }
 
@@ -297,7 +285,7 @@ class KucoinClient extends BasicClient {
     }
 
     // candles
-    if (msg.subject.includes("trade.candles")) { // trade.candles.update + trade.candles.add
+    if (msg.subject === "trade.candles.update") {
       this._processCandles(msg);
       return;
     }
